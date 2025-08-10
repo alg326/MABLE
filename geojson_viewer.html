@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>3D GeoJSON Viewer</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link href="https://unpkg.com/maplibre-gl@2.4.0/dist/maplibre-gl.css" rel="stylesheet" />
+  <style>
+    body { margin: 0; padding: 0; }
+    #map { position: absolute; top: 0; bottom: 0; width: 100%; }
+
+    .legend {
+      position: absolute;
+      bottom: 20px;
+      left: 20px;
+      background: white;
+      padding: 16px;
+      border-radius: 6px;
+      font-family: sans-serif;
+      font-size: 16px;
+      box-shadow: 0 0 8px rgba(0, 0, 0, 0.4);
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+
+    .legend-color {
+      width: 20px;
+      height: 20px;
+      margin-right: 10px;
+      border-radius: 4px;
+    }
+
+    .door { background-color: #00f; }
+    .window { background-color: #0f0; }
+    .wall { background-color: #222; }
+    .room { background-color: #ccc; }
+
+    .room-dropdown {
+      position: absolute;
+      top: 20px;
+      left: 20px;
+      background: white;
+      padding: 8px;
+      border-radius: 6px;
+      font-size: 16px;
+      font-family: sans-serif;
+      box-shadow: 0 0 8px rgba(0,0,0,0.3);
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <!-- Legend -->
+  <div class="legend">
+    <div class="legend-item"><div class="legend-color door"></div>Door</div>
+    <div class="legend-item"><div class="legend-color window"></div>Window</div>
+    <div class="legend-item"><div class="legend-color wall"></div>Wall</div>
+    <div class="legend-item"><div class="legend-color room"></div>Room</div>
+  </div>
+
+  <!-- Room Search Dropdown -->
+  <div class="room-dropdown">
+    <label for="roomDropdown">Find Room:</label>
+    <select id="roomDropdown">
+      <option value="">Select a room</option>
+    </select>
+  </div>
+
+  <script src="https://unpkg.com/maplibre-gl@2.4.0/dist/maplibre-gl.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+  <script>
+    const map = new maplibregl.Map({
+      container: 'map',
+      style: {
+        version: 8,
+        glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
+        sources: {
+          'geojson-source': {
+            type: 'geojson',
+            data: '<geojson filename>?nocache=' + Date.now()
+          }
+        },
+        layers: [
+          {
+            id: 'room-fill',
+            type: 'fill-extrusion',
+            source: 'geojson-source',
+            filter: ['==', ['get', 'class'], 'room'],
+            paint: {
+              'fill-extrusion-color': '#ccc',
+              'fill-extrusion-height': 2,
+              'fill-extrusion-base': 0,
+              'fill-extrusion-opacity': 0.75
+            }
+          },
+          {
+            id: 'wall-extrusion',
+            type: 'fill-extrusion',
+            source: 'geojson-source',
+            filter: ['==', ['get', 'class'], 'wall'],
+            paint: {
+              'fill-extrusion-color': '#222',
+              'fill-extrusion-height': 3,
+              'fill-extrusion-base': 0,
+              'fill-extrusion-opacity': 0.9
+            }
+          },
+          {
+            id: 'walking-paths',
+            type: 'line',
+            source: 'geojson-source',
+            filter: ['==', ['geometry-type'], 'LineString'],
+            paint: {
+              'line-color': '#ff8800',
+              'line-width': 4,
+              'line-opacity': 0.8
+            }
+          },
+          {
+            id: 'points',
+            type: 'circle',
+            source: 'geojson-source',
+            filter: ['==', ['geometry-type'], 'Point'],
+            paint: {
+              'circle-radius': 6,
+              'circle-color': [
+                'match',
+                ['get', 'class'],
+                'door', '#00f',
+                'window', '#0f0',
+                '#f00'
+              ],
+              'circle-stroke-color': '#000',
+              'circle-stroke-width': 1
+            }
+          }
+        ]
+      },
+      center: [0, 0],
+      zoom: 17,
+      pitch: 45,
+      bearing: -20,
+      antialias: true
+    });
+
+    map.addControl(new maplibregl.NavigationControl());
+
+    // Add room popup on click
+    map.on('click', (e) => {
+      const features = map.queryRenderedFeatures(e.point, {
+        layers: ['room-fill']
+      });
+
+      if (features.length > 0) {
+        const feature = features[0];
+        const poly = turf.polygon(feature.geometry.coordinates);
+        const center = turf.centerOfMass(poly).geometry.coordinates;
+        const name = feature.properties.name || 'Unnamed Room';
+
+        new maplibregl.Popup()
+          .setLngLat(center)
+          .setHTML(`<strong>${name}</strong>`)
+          .addTo(map);
+      }
+    });
+
+    // Populate dropdown and pan to selected room
+    map.on('load', async () => {
+      const response = await fetch(map.getStyle().sources['geojson-source'].data);
+      const geojson = await response.json();
+      const dropdown = document.getElementById('roomDropdown');
+
+      geojson.features.forEach((f, idx) => {
+        if (f.geometry.type === 'Polygon' && f.properties.class === 'room') {
+          const name = f.properties.name || `Unnamed Room ${idx + 1}`;
+          const option = document.createElement('option');
+          option.value = idx;
+          option.textContent = name;
+          dropdown.appendChild(option);
+        }
+      });
+
+      dropdown.addEventListener('change', () => {
+        const idx = parseInt(dropdown.value);
+        const room = geojson.features[idx];
+        const poly = turf.polygon(room.geometry.coordinates);
+        const center = turf.centerOfMass(poly).geometry.coordinates;
+
+        map.flyTo({ center, zoom: 19 });
+
+        new maplibregl.Popup()
+          .setLngLat(center)
+          .setHTML(`<strong>${room.properties.name || 'Unnamed Room'}</strong>`)
+          .addTo(map);
+      });
+    });
+  </script>
+</body>
+</html>

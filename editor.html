@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Floor Plan Editor with Wall Tool</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link href="https://unpkg.com/maplibre-gl@2.4.0/dist/maplibre-gl.css" rel="stylesheet" />
+  <script src="https://unpkg.com/maplibre-gl@2.4.0/dist/maplibre-gl.js"></script>
+  <link href="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-draw/v1.4.2/mapbox-gl-draw.css" rel="stylesheet" />
+  <script src="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-draw/v1.4.2/mapbox-gl-draw.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+  <style>
+    body, html { margin: 0; padding: 0; height: 100%; }
+    #map { width: 100%; height: 100%; }
+    .map-overlay {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      background: white;
+      padding: 10px;
+      z-index: 10;
+      border-radius: 4px;
+      font-family: sans-serif;
+    }
+    .map-overlay button {
+      margin-bottom: 5px;
+      width: 140px;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div class="map-overlay">
+    <button onclick="activateWallTool()">🧱 Wall Tool</button><br>
+    <button onclick="activateNameRoomTool()">✏️ Name Room</button><br>
+    <button onclick="save()">💾 Save GeoJSON</button>
+  </div>
+
+  <script>
+    const imageUrl = 'HSTF1.png';
+
+    const map = new maplibregl.Map({
+      container: 'map',
+      style: {
+        version: 8,
+        glyphs: "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf",
+        sources: {
+          draw: {
+            type: 'geojson',
+            data: {
+              type: 'FeatureCollection',
+              features: []
+            }
+          },
+          floorplan: {
+            type: 'image',
+            url: imageUrl,
+            coordinates: [
+              [-0.01, 0.01],
+              [0.01, 0.01],
+              [0.01, -0.01],
+              [-0.01, -0.01]
+            ]
+          }
+        },
+        layers: [
+          {
+            id: 'floorplan-img',
+            type: 'raster',
+            source: 'floorplan',
+            paint: { 'raster-opacity': 0.5 }
+          },
+          {
+            id: 'wall-fill',
+            type: 'fill',
+            source: 'draw',
+            filter: ['all', ['==', ['geometry-type'], 'Polygon'], ['==', ['get', 'class'], 'wall']],
+            paint: {
+              'fill-color': '#222',
+              'fill-opacity': 0.9
+            }
+          },
+          {
+            id: 'polygons',
+            type: 'fill',
+            source: 'draw',
+            filter: ['==', ['geometry-type'], 'Polygon'],
+            paint: {
+              'fill-color': '#ccc',
+              'fill-opacity': 0.4
+            }
+          },
+          {
+            id: 'lines',
+            type: 'line',
+            source: 'draw',
+            filter: ['==', ['geometry-type'], 'LineString'],
+            paint: {
+              'line-color': [
+                'match',
+                ['get', 'class'],
+                'wall', '#000',
+                'path', '#ff7f00',
+                '#999'
+              ],
+              'line-width': 4
+            }
+          },
+          {
+            id: 'points',
+            type: 'circle',
+            source: 'draw',
+            filter: ['==', ['geometry-type'], 'Point'],
+            paint: {
+              'circle-radius': 6,
+              'circle-color': [
+                'match',
+                ['get', 'class'],
+                'door', '#00f',
+                'window', '#0f0',
+                '#f00'
+              ]
+            }
+          },
+          {
+            id: 'labels',
+            type: 'symbol',
+            source: 'draw',
+            filter: ['all', ['==', ['geometry-type'], 'Polygon'], ['has', 'name']],
+            layout: {
+              'text-field': ['get', 'name'],
+              'text-size': 14
+            },
+            paint: {
+              'text-color': '#000'
+            }
+          }
+        ]
+      },
+      center: [0, 0],
+      zoom: 17
+    });
+
+    map.addControl(new maplibregl.NavigationControl());
+
+    const Draw = new MapboxDraw({
+      displayControlsDefault: false,
+      controls: {
+        polygon: true,
+        point: true,
+        line_string: true,
+        trash: true
+      }
+    });
+    map.addControl(Draw);
+
+    // Load image and correct coordinates
+    const img = new Image();
+    img.src = imageUrl;
+    img.onload = () => {
+      const aspect = img.width / img.height;
+      const height = 0.02;
+      const width = height * aspect;
+
+      const topLeft = [-0.01, 0.01];
+      const topRight = [topLeft[0] + width, topLeft[1]];
+      const bottomRight = [topRight[0], topRight[1] - height];
+      const bottomLeft = [topLeft[0], topLeft[1] - height];
+
+      if (map.isStyleLoaded()) {
+        map.getSource('floorplan').setCoordinates([
+          topLeft,
+          topRight,
+          bottomRight,
+          bottomLeft
+        ]);
+      } else {
+        map.on('load', () => {
+          map.getSource('floorplan').setCoordinates([
+            topLeft,
+            topRight,
+            bottomRight,
+            bottomLeft
+          ]);
+        });
+      }
+    };
+
+    // Load existing GeoJSON
+    map.on('load', async () => {
+      const geojsonResp = await fetch('<geojson filename>');
+      const geojson = await geojsonResp.json();
+      geojson.features.forEach(f => Draw.add(f));
+    });
+
+    // Wall drawing mode
+    function activateWallTool() {
+    Draw.changeMode('draw_polygon');
+    map.once('draw.create', (e) => {
+      const newFeature = e.features[0];
+      if (!newFeature.properties) newFeature.properties = {};
+      newFeature.properties.class = "wall";
+      Draw.delete(newFeature.id);
+      Draw.add(newFeature);
+    });
+  }
+
+    // Room naming tool activation
+    let nameRoomMode = false;
+
+    function activateNameRoomTool() {
+      nameRoomMode = true;
+      alert("Click on a room to name it.");
+    }
+
+    // Click handler for naming rooms
+    map.on('click', (e) => {
+      if (!nameRoomMode) return;
+
+      const features = Draw.getAll().features;
+      const clickedFeature = features.find(f => {
+        if (f.geometry.type !== 'Polygon') return false;
+        const shape = turf.polygon(f.geometry.coordinates);
+        return turf.booleanPointInPolygon([e.lngLat.lng, e.lngLat.lat], shape);
+      });
+
+      if (clickedFeature) {
+        const name = prompt("Enter a name for this room:", clickedFeature.properties.name || "");
+        if (name !== null) {
+          clickedFeature.properties.name = name;
+          Draw.delete(clickedFeature.id);
+          Draw.add(clickedFeature);
+        }
+        nameRoomMode = false;
+      }
+    });
+
+    // Save GeoJSON
+    function save() {
+      const data = Draw.getAll();
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'edited.geojson';
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+  </script>
+</body>
+</html>
